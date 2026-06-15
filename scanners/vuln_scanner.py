@@ -17,6 +17,13 @@ import urllib3
 from colorama import Fore, Style, init
 from datetime import datetime
 
+# 导入漏洞数据库模块
+try:
+    from .vuln_db import VulnDatabase, get_db
+    VULN_DB_AVAILABLE = True
+except ImportError:
+    VULN_DB_AVAILABLE = False
+
 # 禁用SSL证书警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
@@ -702,7 +709,100 @@ class VulnerabilityScanner:
         else:
             print(f"{Fore.GREEN}[+] 未发现明显的安全漏洞 (但这不代表绝对安全!){Style.RESET_ALL}")
         
+        # ========== 漏洞库实时比对 ==========
+        self._run_db_comparison()
+        
         return self.vulnerabilities
+    
+    def _run_db_comparison(self, mode='both'):
+        """
+        将扫描结果与漏洞数据库进行比对
+        
+        参数:
+            mode: 'local' / 'online' / 'both'
+        """
+        if not VULN_DB_AVAILABLE:
+            return
+        if not self.vulnerabilities:
+            return
+        
+        print(f"\n{Fore.MAGENTA}{'='*65}{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}[!] 正在与漏洞库进行实时比对...{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}{'='*65}{Style.RESET_ALL}\n")
+        
+        try:
+            db = get_db()
+        except Exception as e:
+            print(f"{Fore.YELLOW}[!] 漏洞库初始化失败，跳过比对: {e}{Style.RESET_ALL}")
+            return
+        
+        # 类型映射：扫描器类型 -> 数据库类别
+        type_map = {
+            'SQL注入': 'sqli',
+            'XSS跨站脚本': 'xss',
+            '目录遍历/文件包含': 'lfi',
+            '未授权访问': 'unauth',
+            '信息泄露': 'info_leak',
+            'SSRF服务端请求伪造': 'ssrf',
+        }
+        
+        all_matches = []
+        
+        for vuln in self.vulnerabilities:
+            vuln_type = vuln.get('type', '')
+            db_category = type_map.get(vuln_type, '')
+            
+            scan_result = {
+                'type': db_category,
+                'target': vuln.get('url', ''),
+                'detail': f"{vuln_type} - {vuln.get('evidence', '')}",
+                'response_content': vuln.get('response_content', ''),
+            }
+            
+            matches = db.match(scan_result, mode=mode)
+            
+            for m in matches:
+                match_info = {
+                    'original_vuln': vuln,
+                    'matched_poc': m,
+                    'match_score': m.get('match_score', 0),
+                    'match_mode': m.get('match_mode', ''),
+                    'match_reasons': m.get('match_reasons', []),
+                }
+                all_matches.append(match_info)
+        
+        # 输出比对结果
+        if all_matches:
+            print(f"{Fore.GREEN}[+] 比对完成! 匹配到 {len(all_matches)} 条漏洞库记录:{Style.RESET_ALL}\n")
+            
+            for idx, match in enumerate(all_matches, 1):
+                poc = match['matched_poc']
+                score = match['match_score']
+                mode_tag = Fore.CYAN + '[本地]' if match['match_mode'] == 'local' else Fore.LIGHTMAGENTA_EX + '[在线]'
+                
+                sev_color = {
+                    'Critical': Fore.RED, 'High': Fore.LIGHTRED_EX,
+                    'Medium': Fore.YELLOW, 'Low': Fore.GREEN
+                }.get(poc.get('severity', ''), Fore.WHITE)
+                
+                print(f"  {mode_tag}{Style.RESET_ALL} 匹配 #{idx} (相似度: {score}分)")
+                print(f"    POC ID:   {poc.get('id', '?')}")
+                print(f"    名称:     {poc.get('name', '?')}")
+                print(f"    严重度:   {sev_color}{poc.get('severity', '?')}{Style.RESET_ALL}"
+                      f" | CVE: {poc.get('cve_id', '-') or '-'}"
+                      f" | CVSS: {poc.get('cvss_score', '-')}")
+                
+                if poc.get('description'):
+                    print(f"    描述:     {poc.get('description', '')[:80]}")
+                if match.get('match_reasons'):
+                    print(f"    匹配原因: {', '.join(match['match_reasons'])}")
+                if poc.get('affected_components'):
+                    print(f"    影响组件: {', '.join(poc['affected_components'][:3])}")
+                if poc.get('references'):
+                    print(f"    参考:     {poc['references'][0] if poc['references'] else ''}")
+                print()
+        else:
+            print(f"{Fore.YELLOW}[!] 漏洞库中未找到匹配记录{Style.RESET_ALL}")
     
     def save_report(self, filename=None):
         """

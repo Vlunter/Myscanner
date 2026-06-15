@@ -24,6 +24,7 @@ try:
     from scanners.port_scanner import PortScanner
     from scanners.fingerprint import FingerprintScanner
     from scanners.vuln_scanner import VulnerabilityScanner
+    from scanners.vuln_db import VulnDatabase, get_db
 except ImportError as e:
     print(f"{Fore.RED}[!] 导入模块失败: {e}{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}[*] 请确保: 1) 已激活虚拟环境  2) scanners目录存在{Style.RESET_ALL}")
@@ -154,6 +155,172 @@ def run_all(target, args):
     return results
 
 
+def run_db_mode():
+    """
+    漏洞库管理 / POC管理 / CVE查询 交互模式
+    
+    功能:
+        1. 查看POC库统计和列表
+        2. 添加自定义POC
+        3. 删除自定义POC
+        4. 搜索POC
+        5. 在线CVE查询
+        6. 导入/导出POC
+    """
+    print(f"\n{'='*60}")
+    print(f"{Fore.MAGENTA}  漏洞数据库管理中心")
+    print(f"{'='*60}")
+    
+    try:
+        db = VulnDatabase()
+    except Exception as e:
+        print(f"{Fore.RED}[!] 数据库初始化失败: {e}{Style.RESET_ALL}")
+        return None
+    
+    while True:
+        print(f"\n{Fore.YELLOW}请选择操作:{Style.RESET_ALL}")
+        print("    1. 库统计信息")
+        print("    2. 列出所有POC (内置+自定义)")
+        print("    3. 搜索POC (按关键词/CVE)")
+        print("    4. 添加自定义POC")
+        print("    5. 删除自定义POC")
+        print("    6. 在线CVE查询")
+        print("    7. 导出自定义POC")
+        print("    8. 导入POC文件")
+        print("    0. 返回主菜单")
+        
+        choice = input(f"\n{Fore.CYAN}[?] 选择操作 (0-8): {Style.RESET_ALL}").strip()
+        
+        if choice == '0':
+            print(f"{Fore.CYAN}[*] 返回主菜单...{Style.RESET_ALL}\n")
+            break
+        
+        elif choice == '1':
+            # 统计信息
+            db.get_stats()
+        
+        elif choice == '2':
+            # 列出所有POC
+            detail = input(f"{Fore.CYAN}[?] 显示详细信息? (y/n, 默认n): {Style.RESET_ALL}").strip().lower()
+            db.list_all_pocs(show_details=(detail == 'y'))
+        
+        elif choice == '3':
+            # 搜索POC
+            keyword = input(f"{Fore.CYAN}[?] 输入搜索关键词: {Style.RESET_ALL}").strip()
+            if keyword:
+                db.search_poc(keyword)
+            else:
+                print(f"{Fore.YELLOW}[!] 请输入关键词{Style.RESET_ALL}")
+        
+        elif choice == '4':
+            # 添加自定义POC
+            print(f"\n{Fore.GREEN}[+] 添加自定义POC{Style.RESET_ALL}")
+            poc = {}
+            poc['name'] = input(f"  POC名称: ").strip()
+            poc['description'] = input(f"  描述: ").strip()
+            
+            print(f"  类别: sqli/xss/lfi/rce/ssrf/unauth/info_leak/xxe/deser")
+            poc['category'] = input(f"  类别 (如sqli): ").strip().lower()
+            
+            print(f"  严重度: Critical/High/Medium/Low")
+            poc['severity'] = input(f"  严重度 (如High): ").strip().capitalize()
+            
+            poc['cve_id'] = input(f"  CVE编号 (可选，留空跳过): ").strip().upper()
+            
+            # Payloads
+            payloads_str = input(f"  Payload列表 (逗号分隔，可选): ").strip()
+            if payloads_str:
+                poc['payloads'] = [p.strip() for p in payloads_str.split(',')]
+            
+            # Paths
+            paths_str = input(f"  检测路径 (逗号分隔，可选): ").strip()
+            if paths_str:
+                poc['paths'] = [p.strip() for p in paths_str.split(',')]
+            
+            # Ports
+            ports_str = input(f"  端口列表 (逗号分隔，可选): ").strip()
+            if ports_str:
+                try:
+                    poc['ports'] = [int(p.strip()) for p in ports_str.split(',')]
+                except ValueError:
+                    poc['ports'] = []
+            
+            # Match patterns
+            patterns_str = input(f"  匹配特征 (逗号分隔，可选): ").strip()
+            if patterns_str:
+                poc['match_patterns'] = [p.strip() for p in patterns_str.split(',')]
+            
+            # References
+            refs_str = input(f"  参考链接 (逗号分隔，可选): ").strip()
+            if refs_str:
+                poc['references'] = [r.strip() for r in refs_str.split(',')]
+            
+            # Affected components
+            comp_str = input(f"  影响组件 (逗号分隔，可选): ").strip()
+            if comp_str:
+                poc['affected_components'] = [c.strip() for c in comp_str.split(',')]
+            
+            if poc.get('name'):
+                new_id = db.add_custom_poc(poc)
+                print(f"{Fore.GREEN}[+] POC添加成功! ID: {new_id}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.RED}[!] 名称不能为空{Style.RESET_ALL}")
+        
+        elif choice == '5':
+            # 删除自定义POC
+            db.list_all_pocs(category=None)
+            poc_id = input(f"\n{Fore.RED}[!] 输入要删除的POC ID: {Style.RESET_ALL}").strip()
+            if poc_id:
+                confirm = input(f"{Fore.RED}[!!] 确认删除? (y/n): {Style.RESET_ALL}").strip().lower()
+                if confirm == 'y':
+                    db.delete_custom_poc(poc_id)
+                else:
+                    print(f"{Fore.YELLOW}[!] 已取消删除{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.YELLOW}[!] 请输入POC ID{Style.RESET_ALL}")
+        
+        elif choice == '6':
+            # 在线CVE查询
+            print(f"\n{Fore.LIGHTMAGENTA_EX}[*] 在线CVE/NVD查询{Style.RESET_ALL}")
+            query_type = input(f"  查询方式: 1)CVE编号  2)关键词搜索: ").strip()
+            
+            if query_type == '1':
+                cve_id = input(f"  输入CVE编号 (如 CVE-2021-44228): ").strip().upper()
+                if cve_id:
+                    db.query_cve_online(cve_id=cve_id, limit=5)
+                else:
+                    print(f"{Fore.YELLOW}[!] 请输入CVE编号{Style.RESET_ALL}")
+            else:
+                keyword = input(f"  输入关键词 (如 log4j struts spring): ").strip()
+                if keyword:
+                    limit_str = input(f"  返回数量 (默认10): ").strip()
+                    limit = int(limit_str) if limit_str.isdigit() else 10
+                    db.query_cve_online(keyword=keyword, limit=limit)
+                else:
+                    print(f"{Fore.YELLOW}[!] 请输入关键词{Style.RESET_ALL}")
+        
+        elif choice == '7':
+            # 导出POC
+            output_file = input(f"  导出路径 (回车使用默认): ").strip()
+            exported = db.export_pocs(output_file if output_file else None)
+            if not exported:
+                print(f"{Fore.YELLOW}[!] 没有自定义POC可导出{Style.RESET_ALL}")
+        
+        elif choice == '8':
+            # 导入POC
+            import_file = input(f"  JSON文件路径: ").strip()
+            if import_file and os.path.exists(import_file):
+                count = db.import_pocs(import_file)
+                print(f"{Fore.GREEN}[+] 导入完成: {count} 条POC{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.RED}[-] 文件不存在: {import_file}{Style.RESET_ALL}")
+        
+        else:
+            print(f"{Fore.RED}[!] 无效选择{Style.RESET_ALL}")
+    
+    return None
+
+
 def main():
     """
     主函数 - 解析命令行参数并执行对应功能
@@ -228,9 +395,10 @@ def main():
         print("    2. Web指纹识别 (finger)")
         print("    3. 漏洞检测 (vuln)")
         print("    4. 全部扫描 (all) [推荐]")
+        print("    5. 漏洞库管理 (db) [POC管理/CVE查询]")
 
-        mode_choice = input(f"\n{Fore.CYAN}[?] 选择模式 (1-4，默认4): {Style.RESET_ALL}").strip()
-        mode_map = {'1': 'port', '2': 'finger', '3': 'vuln', '4': 'all', '': 'all'}
+        mode_choice = input(f"\n{Fore.CYAN}[?] 选择模式 (1-5，默认4): {Style.RESET_ALL}").strip()
+        mode_map = {'1': 'port', '2': 'finger', '3': 'vuln', '4': 'all', '5': 'db', '': 'all'}
         args.mode = mode_map.get(mode_choice, 'all')
 
         print()
@@ -254,9 +422,14 @@ def main():
             'finger': run_fingerprint,
             'vuln': run_vuln_scan,
             'all': run_all,
+            'db': run_db_mode,
         }
         
-        result = mode_functions[args.mode](args.target, args)
+        if args.mode == 'db':
+            # 漏洞库模式不需要目标
+            result = run_db_mode()
+        else:
+            result = mode_functions[args.mode](args.target, args)
     finally:
         # ===== 停止实时时钟并显示最终统计 =====
         stop_realtime_clock(start_time)

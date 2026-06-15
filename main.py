@@ -25,6 +25,8 @@ try:
     from scanners.fingerprint import FingerprintScanner
     from scanners.vuln_scanner import VulnerabilityScanner
     from scanners.vuln_db import VulnDatabase, get_db
+    from scanners.security_headers import SecurityHeaderScanner
+    from scanners.report_generator import ReportGenerator, generate_report
 except ImportError as e:
     print(f"{Fore.RED}[!] 导入模块失败: {e}{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}[*] 请确保: 1) 已激活虚拟环境  2) scanners目录存在{Style.RESET_ALL}")
@@ -150,9 +152,287 @@ def run_all(target, args):
     results['fingerprint'] = run_fingerprint(target, args)
     
     # 3. 漏洞扫描
-    results['vulnerabilities'] = run_vuln_scan(target, args)
+    vuln_result = run_vuln_scan(target, args)
+    results['vulnerabilities'] = vuln_result if isinstance(vuln_result, list) else []
+    
+    # 4. 安全头检测 (仅HTTP/HTTPS目标)
+    if target.startswith(('http://', 'https://')):
+        try:
+            sec_scanner = SecurityHeaderScanner(target, timeout=args.timeout)
+            sec_results = sec_scanner.scan()
+            results['security_headers'] = sec_results
+        except Exception as e:
+            print(f"{Fore.YELLOW}[!] 安全头检测跳过: {e}{Style.RESET_ALL}")
+            results['security_headers'] = []
+    else:
+        print(f"{Fore.YELLOW}[*] 安全头检测跳过 (非HTTP目标){Style.RESET_ALL}")
+        results['security_headers'] = []
     
     return results
+
+
+def run_security_headers(target, args):
+    """运行安全头检测（独立模式）"""
+    scanner = SecurityHeaderScanner(target, timeout=args.timeout)
+    return scanner.scan()
+
+
+def run_batch_scan(args):
+    """
+    批量扫描模式 - 从文件读取多个目标逐个扫描
+    
+    支持的目标文件格式 (每行一个目标):
+        192.168.1.1
+        example.com
+        http://test.org/api
+        https://target.com/admin
+        
+    或逗号分隔:
+        192.168.1.1, example.com, test.org
+    """
+    print(f"\n{'='*60}")
+    print(f"{Fore.MAGENTA}  批量扫描模式")
+    print(f"{'='*60}\n")
+    
+    target_input = input(f"{Fore.CYAN}[?] 输入目标文件路径 或 直接粘贴多个目标(逗号/换行分隔): {Style.RESET_ALL}").strip()
+    
+    if not target_input:
+        print(f"{Fore.RED}[!] 未输入目标{Style.RESET_ALL}")
+        return None
+    
+    targets = []
+    
+    # 判断是文件路径还是直接输入的目标列表
+    if os.path.isfile(target_input):
+        try:
+            with open(target_input, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        targets.append(line)
+            print(f"{Fore.GREEN}[+] 从文件加载 {len(targets)} 个目标: {target_input}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[!] 文件读取失败: {e}{Style.RESET_ALL}")
+            return None
+    else:
+        # 直接输入，支持逗号或空格分隔
+        for item in target_input.replace(',', '\n').replace(' ', '\n').split('\n'):
+            item = item.strip()
+            if item:
+                targets.append(item)
+        print(f"{Fore.GREEN}[+] 解析到 {len(targets)} 个目标{Style.RESET_ALL}")
+    
+    if not targets:
+        print(f"{Fore.RED}[!] 无有效目标{Style.RESET_ALL}")
+        return None
+    
+    # 选择批量扫描的子模式
+    print(f"\n{Fore.YELLOW}请选择批量扫描内容:{Style.RESET_ALL}")
+    print("    1. 全部扫描 (port + finger + vuln + headers) [推荐]")
+    print("    2. 仅漏洞检测 (vuln)")
+    print("    3. 仅端口扫描 (port)")
+    print("    4. 仅安全头检测 (headers)")
+    
+    sub_choice = input(f"\n{Fore.CYAN}[?] 选择 (1-4，默认1): {Style.RESET_ALL}").strip() or '1'
+    
+    # 是否生成汇总报告
+    gen_report = input(f"\n{Fore.CYAN}[?] 扫描完成后是否生成HTML报告? (y/n，默认y): {Style.RESET_ALL}").strip().lower()
+    gen_report = gen_report != 'n'
+    
+    # 批量扫描主循环
+    all_results = {}
+    total_vulns = 0
+    success_count = 0
+    fail_count = 0
+    
+    start_time = datetime.now()
+    
+    for idx, target in enumerate(targets, 1):
+        print(f"\n{'='*65}")
+        print(f"{Fore.CYAN}[{idx}/{len(targets)}] 正在扫描: {target}{Style.RESET_ALL}")
+        print(f"{'='*65}")
+        
+        try:
+            result = {}
+            
+            if sub_choice == '1':
+                result['ports'] = run_port_scan(target, args)
+                result['fingerprint'] = run_fingerprint(target, args)
+                vulns = run_vuln_scan(target, args)
+                result['vulnerabilities'] = vulns if isinstance(vulns, list) else []
+                if target.startswith(('http://', 'https://')):
+                    try:
+                        sec = SecurityHeaderScanner(target, timeout=args.timeout)
+                        result['security_headers'] = sec.scan()
+                    except:
+                        result['security_headers'] = []
+                else:
+                    result['security_headers'] = []
+                    
+            elif sub_choice == '2':
+                vulns = run_vuln_scan(target, args)
+                result['vulnerabilities'] = vulns if isinstance(vulns, list) else []
+                
+            elif sub_choice == '3':
+                result['ports'] = run_port_scan(target, args)
+                
+            elif sub_choice == '4':
+                if target.startswith(('http://', 'https://')):
+                    sec = SecurityHeaderScanner(target, timeout=args.timeout)
+                    result['security_headers'] = sec.scan()
+                else:
+                    print(f"{Fore.YELLOW}[*] 跳过安全头检测(非HTTP目标){Style.RESET_ALL}")
+                    result['security_headers'] = []
+            
+            all_results[target] = result
+            
+            vuln_count = len(result.get('vulnerabilities', []))
+            total_vulns += vuln_count
+            success_count += 1
+            
+            print(f"\n{Fore.GREEN}[+] 目标 [{idx}] 完成 - 发现 {vuln_count} 个问题{Style.RESET_ALL}")
+            
+        except KeyboardInterrupt:
+            print(f"\n{Fore.YELLOW}[!] 用户中断，跳过当前目标{Style.RESET_ALL}")
+            fail_count += 1
+            continue
+        except Exception as e:
+            print(f"{Fore.RED}[!] 目标 [{idx}] 扫描失败: {e}{Style.RESET_ALL}")
+            fail_count += 1
+            continue
+        
+        # 目标间间隔（防止被封）
+        if idx < len(targets):
+            delay = random.uniform(1.0, 3.0)
+            print(f"{Fore.CYAN}[*] 等待 {delay:.1f}s 后继续下一个目标...{Style.RESET_ALL}")
+            time.sleep(delay)
+    
+    end_time = datetime.now()
+    duration = str(end_time - start_time).split('.')[0]
+    
+    # ===== 批量扫描汇总 =====
+    print(f"\n{'='*65}")
+    print(f"{Fore.MAGENTA}  批量扫描汇总报告")
+    print(f"{'='*65}")
+    print(f"  总目标数:   {len(targets)}")
+    print(f"  成功:       {success_count}")
+    print(f"  失败:       {fail_count}")
+    print(f"  总问题数:   {total_vulns}")
+    print(f"  总耗时:     {duration}")
+    print(f"{'='*65}\n")
+    
+    # 生成批量汇总报告
+    if gen_report and all_results:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        batch_report_data = {
+            'target': f'批量扫描 ({len(targets)}个目标)',
+            'mode': f'batch-{sub_choice}',
+            'start_time': start_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'end_time': end_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'vulnerabilities': [],
+            'ports': [],
+            'fingerprints': [],
+            'security_headers': [],
+            'db_matches': [],
+        }
+        
+        # 汇总所有结果
+        for tgt, res in all_results.items():
+            if isinstance(res.get('vulnerabilities'), list):
+                for v in res['vulnerabilities']:
+                    v['_source_target'] = tgt
+                    batch_report_data['vulnerabilities'].append(v)
+            if isinstance(res.get('ports'), list):
+                for p in res.get('ports', []):
+                    p['_source_target'] = tgt
+                    batch_report_data['ports'].append(p)
+            if isinstance(res.get('fingerprint'), list):
+                for fp in res.get('fingerprint', []):
+                    fp['_source_target'] = tgt
+                    batch_report_data['fingerprints'].append(fp)
+            if isinstance(res.get('security_headers'), list):
+                for h in res.get('security_headers', []):
+                    h['_source_target'] = tgt
+                    batch_report_data['security_headers'].append(h)
+        
+        gen = ReportGenerator()
+        output_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'reports',
+            f'batch_scan_{timestamp}.html'
+        )
+        gen.generate(batch_report_data, format='html', output_file=output_path)
+        gen.generate(batch_report_data, format='json')
+    
+    return all_results
+
+
+def print_report_prompt(result, args):
+    """
+    扫描完成后询问用户是否生成报告
+    
+    参数:
+        result: 扫描结果数据
+        args: 命令行参数
+    """
+    if result is None:
+        return
+    
+    # 构建报告数据
+    # 获取扫描开始时间（从全局或当前时间）
+    _scan_start = getattr(start_realtime_clock, 'scan_start_time', None) or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if not hasattr(start_realtime_clock, 'scan_start_time'):
+        _scan_start = globals().get('_scan_begin_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    
+    scan_data = {
+        'target': args.target,
+        'mode': args.mode,
+        'start_time': _scan_start,
+        'end_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    
+    # 根据结果类型填充数据
+    if isinstance(result, dict):
+        scan_data['vulnerabilities'] = result.get('vulnerabilities', [])
+        scan_data['ports'] = result.get('ports', [])
+        scan_data['fingerprints'] = result.get('fingerprint', [])
+        scan_data['security_headers'] = result.get('security_headers', [])
+        # 漏洞库比对结果（从vuln_scanner中提取）
+        scan_data['db_matches'] = result.get('db_matches', [])
+    elif isinstance(result, list):
+        scan_data['vulnerabilities'] = result
+        scan_data['ports'] = []
+        scan_data['fingerprints'] = []
+        scan_data['security_headers'] = []
+        scan_data['db_matches'] = []
+    
+    # 询问是否生成报告
+    print(f"\n{Fore.CYAN}{'='*55}{Style.RESET_ALL}")
+    gen_choice = input(f"{Fore.CYAN}[?] 是否生成扫描报告? (1=HTML / 2=JSON / 3=TXT / 4=全部 / n=跳过): {Style.RESET_ALL}").strip().lower()
+    
+    if gen_choice == 'n' or not gen_choice:
+        return
+    
+    format_map = {'1': 'html', '2': 'json', '3': 'txt', '4': 'all'}
+    fmt = format_map.get(gen_choice, 'html')
+    
+    try:
+        gen = ReportGenerator()
+        output_path = gen.generate(scan_data, format=fmt)
+        
+        if output_path:
+            if isinstance(output_path, list):
+                for p in output_path:
+                    print(f"{Fore.GREEN}[+] 报告已保存: {p}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.GREEN}[+] 报告已保存: {output_path}{Style.RESET_ALL}")
+                
+                # HTML报告自动打开提示
+                if fmt in ('html', 'all'):
+                    print(f"\n{Fore.CYAN}[*] 提示: 可直接在浏览器中打开HTML报告查看{Style.RESET_ALL}")
+                    actual_path = output_path[0] if isinstance(output_path, list) else output_path
+                    print(f"    文件: {actual_path}")
+    except Exception as e:
+        print(f"{Fore.RED}[!] 报告生成失败: {e}{Style.RESET_ALL}")
 
 
 def run_db_mode():
@@ -396,15 +676,19 @@ def main():
         print("    3. 漏洞检测 (vuln)")
         print("    4. 全部扫描 (all) [推荐]")
         print("    5. 漏洞库管理 (db) [POC管理/CVE查询]")
+        print("    6. 安全头检测 (headers)")
+        print("    b. 批量扫描 (batch) [多目标文件]")
 
-        mode_choice = input(f"\n{Fore.CYAN}[?] 选择模式 (1-5，默认4): {Style.RESET_ALL}").strip()
-        mode_map = {'1': 'port', '2': 'finger', '3': 'vuln', '4': 'all', '5': 'db', '': 'all'}
+        mode_choice = input(f"\n{Fore.CYAN}[?] 选择模式 (1-6/b，默认4): {Style.RESET_ALL}").strip()
+        mode_map = {'1': 'port', '2': 'finger', '3': 'vuln', '4': 'all', '5': 'db', '6': 'headers',
+                    'b': 'batch', 'B': 'batch', '': 'all'}
         args.mode = mode_map.get(mode_choice, 'all')
 
         print()
     
     # ===== 显示扫描配置信息 =====
-    start_time = datetime.now()
+    global _scan_begin_time
+    _scan_begin_time = start_time = datetime.now()
     
     print(f"{Fore.CYAN}{'='*55}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}[+] 目标: {args.target}{Style.RESET_ALL}")
@@ -423,13 +707,22 @@ def main():
             'vuln': run_vuln_scan,
             'all': run_all,
             'db': run_db_mode,
+            'headers': run_security_headers,
+            'batch': run_batch_scan,
         }
         
         if args.mode == 'db':
             # 漏洞库模式不需要目标
             result = run_db_mode()
+        elif args.mode == 'batch':
+            # 批量扫描模式（目标在内部获取）
+            result = run_batch_scan(args)
         else:
             result = mode_functions[args.mode](args.target, args)
+            
+            # ===== 扫描完成后询问是否生成报告 =====
+            if result is not None and args.mode != 'port' and args.mode != 'finger':
+                print_report_prompt(result, args)
     finally:
         # ===== 停止实时时钟并显示最终统计 =====
         stop_realtime_clock(start_time)

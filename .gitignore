@@ -15,6 +15,9 @@ dist/*.exe
 # 数据库文件（用户本地数据，不上传）
 data/
 
+# 扫描报告（每次生成，不上传）
+reports/
+
 # IDE
 .vscode/
 .idea/
